@@ -1,0 +1,208 @@
+---
+title: "ETP-Node"
+author: "Randall Hidalgo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+load libraries
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(sp)
+library(measurements)
+#library(geonames)
+#library(rnaturalearth)
+```
+
+# Load data
+
+## Raw data
+
+```{r}
+raw1<-read_xlsx("raw_data1.xlsx")
+raw2<-read_xlsx("raw_data2.xlsx")
+benthos<-read_csv("benthos_functional_groups.csv")
+```
+
+## Intermediate data for reference
+
+```{r}
+inter<-read_rds("data_intermediate_example.rds")
+```
+
+# 1. Clean databases
+
+```{r}
+# remove uninformative columns (not in the intermediate data set)
+raw1<-raw1 |> select(-c(...1, ...21, DATE))
+raw2<-raw2 |> select(-c(...1, ...20, Reef, Reef_zone))
+benthos<-benthos |> select(Functional_group_correct, Functional_group)
+
+# Check if the variables are the same
+data.frame(raw1=names(raw1), raw2=c(names(raw2), NA, NA))
+```
+
+Note that in raw2 there are no columns for ENCO, Gardineroseris, Boulders nor OTHR. While in raw 1 the are no columns for ENSP nor Total live coral. So I will add them.
+
+```{r}
+raw1$ENSP<-NA
+raw1$`Total live coral`<-NA
+
+raw2$ENCO<-NA
+raw2$Gardineroseris<-NA
+raw2$Boul<-NA
+raw2$OTHR<-NA
+```
+
+I will remove the "% " from raw1 database and rename two variables in raw2 to match those in raw1.
+
+```{r}
+# Remove %
+names_raw1<-names(raw1)
+names_raw1<-str_replace(names_raw1, "% ", "")
+
+# rename the variables from raw1
+names(raw1)<-names_raw1
+
+# raw2 has two columns named total so I'll change both columns in raw1 to match that. I could remove them from raw1 instead but I will do that later.
+names(raw2)[c(9,10)]<-c("BRAN", "MASS")
+
+# change everything to lower case to avoid problems due to different string formats
+names(raw1)<-tolower(names(raw1))
+names(raw2)<-tolower(names(raw2))
+
+# Check again if the variables are the same
+data.frame(raw1=names(raw1), raw2=c(names(raw2)))
+
+```
+
+## Change format to long
+
+```{r}
+# variables to select
+## filter out bran, mass and total live coral
+variables<-c("rock", "boul", "rubb", "sand", "dcor", "enco", "falg", "talg", 
+             "cyan", "calg", "ealg", "othr", "gardineroseris", "pocillopora", 
+             "pavona", "psammocora", "ensp")
+
+
+raw1_long<-pivot_longer(data = raw1,
+                        cols = all_of(variables),
+                        names_to = "functional_group",
+                        values_to = "value") |> 
+  select(-c(bran, mass, `total live coral`))
+
+raw2_long<- pivot_longer(data = raw2,
+                        cols = all_of(variables),
+                        names_to = "functional_group",
+                        values_to = "value") |> 
+  select(-c(bran, mass, `total live coral`))
+
+# check if both data sets have the same variables
+names(raw1_long)
+names(raw2_long)
+
+# check if levels of "functional group" are the same
+levels(as.factor(raw1_long$functional_group))
+levels(as.factor(raw2_long$functional_group))
+```
+
+# 2. Join databases
+
+```{r}
+levels(as.factor(raw1_long$year))
+levels(as.factor(raw2_long$year))
+```
+
+We can see that both data sets are complementary. Raw1 data set contains information from year1 to year17 and raw2 from year18 to year21. So I need to combine those horizontally.
+
+In order to do that I will first reorder both datasets to have the same variables per position
+```{r}
+orden<-c("site", "lat", "long", "year", "month", "day", "dataset_id", 
+         "depth", "transect", "functional_group", "value")
+
+raw1_long<-raw1_long |> 
+  select(all_of(orden))
+
+raw2_long<-raw2_long |> 
+  select(all_of(orden))
+
+# Join data sets
+raw_long <- rbind(raw1_long, raw2_long)
+
+head(raw_long, 5)
+```
+
+# 3. Check coordinates format
+
+Both data sets lack information about coordinates, so I will do an example of how I would proceed.
+
+```{r}
+# convert from degrees, minutes, seconds to decimal system
+
+# using measurements library. This would require to specify the "-".
+
+lat_dec<-as.numeric(conv_unit('9 56 5.0604', 
+                              from = "deg_min_sec", 
+                              to = "dec_deg"))
+
+long_dec<-as.numeric(conv_unit('-84 5 15.0072', 
+                               from = "deg_min_sec", 
+                               to = "dec_deg"))
+
+print(c(lat_dec, long_dec))
+
+# using sp library
+
+lat<-"9d56m5.0604sN"
+long<-"84d5m15.0072sW"
+
+lat_dec<-char2dms(lat, chd="d", chm="m", chs="s") |> as.numeric()
+long_dec<-char2dms(long, chd="d", chm="m", chs="s") |> as.numeric()
+
+print(c(lat_dec, long_dec))
+```
+
+# 4. Assign region, country, location
+
+```{r}
+GNcountryCode(lat = lat_dec, lng = long_dec, lang = "en")
+```
+
+# 5. Save clean database
+
+```{r}
+save(db, file = "cleanDB.rds")
+```
+
+# 6. Identificar información faltante, valores fuera de rango o con diferente escala
+
+```{r}
+
+```
+
+# 7. Identificar inconsistencas y registrar filas en base de bentos que no tengan coincidencias.
+
+```{r}
+
+```
+
+# 8. Identificar errores, profundidades mayores a 35 m, temperatura fuera del
+rango 17-35, cuadrantes o transectos mayores a 10, años antes de 2000, especies terrestres o que no son de la región
+
+```{r}
+
+```
+
+
+
+
+
+
+

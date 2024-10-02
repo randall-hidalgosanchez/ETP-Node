@@ -2,7 +2,9 @@
 title: "ETP-Node"
 author: "Randall Hidalgo"
 date: "`r Sys.Date()`"
-output: html_document
+output:
+  rmdformats::readthedown:
+    highlight: kate
 ---
 
 ```{r setup, include=FALSE}
@@ -13,11 +15,13 @@ load libraries
 
 ```{r}
 library(tidyverse)
+library(skimr)
 library(readxl)
 library(sp)
 library(measurements)
-#library(geonames)
-#library(rnaturalearth)
+library(geonames) # requires an account from geonames
+library(sf)
+library(tidygeocoder)
 ```
 
 # Load data
@@ -123,7 +127,9 @@ levels(as.factor(raw2_long$year))
 We can see that both data sets are complementary. Raw1 data set contains information from year1 to year17 and raw2 from year18 to year21. So I need to combine those horizontally.
 
 In order to do that I will first reorder both datasets to have the same variables per position
+
 ```{r}
+# reorder
 orden<-c("site", "lat", "long", "year", "month", "day", "dataset_id", 
          "depth", "transect", "functional_group", "value")
 
@@ -139,13 +145,102 @@ raw_long <- rbind(raw1_long, raw2_long)
 head(raw_long, 5)
 ```
 
-# 3. Check coordinates format
+# 3. Functional groups
+
+## Create a function to asign groups based on the information available
+
+This function will take the functional group variable and based on the values of each observation assign the "correct" one. The function is  easily editable.
+
+```{r}
+# boul: boulders; dcor: dead coral; lcor: live coral;
+# scor: soft coral; talg: turf algae; malg: macroalgae;
+# calg: coralline algae; ealg: encrusting calcareous algae;
+# enco: encrusting corals; ensp: encrusting sponges;
+# falg: fleshy algae; rubb: rubbles
+
+assign_group<- function(grupo=NULL) # requires a vector
+{
+    functional<-NULL # creates a new variable
+    for (i in seq_along(grupo)) 
+    {
+        if (grupo[i]=="pavona" | grupo[i]=="pocillopora_sp" | 
+            grupo[i]=="porites" | grupo[i]=="porites_panamensis" |
+            grupo[i]=="pavona_clavus" | grupo[i]=="pavona_gigantea" |
+            grupo[i]=="pavona_varians" |grupo[i]=="pocillopora_elegans" |
+            grupo[i]=="psammocora" | grupo[i]=="gardineroseris_planulata" |
+            grupo[i]=="psammocora_stellata" | grupo[i]=="gardineroseris" |
+            grupo[i]=="pocillopora" | grupo[i]=="enco")
+        {
+            functional[i]<-"coral"
+        }
+        else if (grupo[i]=="dcor") 
+        {
+            functional[i]<-"coral_muerto"
+        }
+        else if (grupo[i]=="calcareouos_algae" | grupo[i]=="calg" |
+                 grupo[i]=="acc" | grupo[i]=="alga_calcarea" | 
+                 grupo[i]=="alga_coralina" | grupo[i]=="ealg" | 
+                 grupo[i]=="encrusting_calcareous_algae") 
+        {
+            functional[i]<-"alga_calcarea"
+        }
+        else if (grupo[i]=="alga_parda" | grupo[i]=="alga_cafe" |
+                 grupo[i]=="sargassum" | grupo[i]=="padina" | 
+                 grupo[i]=="alga_roja" | grupo[i]=="alga_verde" |
+                 grupo[i]=="turfing_algae" | grupo[i]=="fleshy_algae"|
+                 grupo[i]=="falg" | grupo[i]=="fleshy_algae") 
+        {
+          
+            functional[i]<-"macroalga"
+        }
+        else if (grupo[i]=="rock" | grupo[i]=="grava" |
+                 grupo[i]=="rubb" | grupo[i]=="rubble" |
+                 grupo[i]=="boul" | grupo[i]=="boulders") 
+        {
+            functional[i]<-"roca"
+        }
+        else if (grupo[i]=="tapete" | grupo[i]=="talg") 
+        {
+            functional[i]<-"turf"
+        }
+        else if (grupo[i]=="sand") 
+        {
+            functional[i]<-"arena"
+        }
+        else if (grupo[i]=="esponja" | grupo[i]=="hidrozoario" |
+                 grupo[i]=="ascidia" | grupo[i]=="ascidias" |
+                 grupo[i]=="zoanthido" | grupo[i]=="poliqueto" |
+                 grupo[i]=="tunicado" | grupo[i]=="anemona" |
+                 grupo[i]=="octocoral" | grupo[i]=="lapa" |
+                 grupo[i]=="rodolito" | grupo[i]=="moluscos" |
+                 grupo[i]=="cirripedio" | grupo[i]=="poliquetos" |
+                 grupo[i]=="balano" | grupo[i]=="bryozoa" |
+                 grupo[i]=="cnidarios" | grupo[i]=="esponjas" |
+                 grupo[i]=="anemonas" | grupo[i]=="cianobacteria" | 
+                 grupo[i]=="cyanobacteria" | grupo[i]=="ensp" |
+                 grupo[i]=="colonias_incrustrantes" | grupo[i]=="cyan" |
+                 grupo[i]=="othr") 
+        {
+            functional[i]<-"otros"
+        }
+      
+        else {functional[i]<-grupo[i]}
+
+    }
+    return(functional)
+}
+```
+
+```{r}
+raw_long$functional_group_correct<-assign_group(raw_long$functional_group)
+raw_long$functional_group_correct |> head(10)
+```
+
+# 4. Check coordinates format
 
 Both data sets lack information about coordinates, so I will do an example of how I would proceed.
 
 ```{r}
-# convert from degrees, minutes, seconds to decimal system
-
 # using measurements library. This would require to specify the "-".
 
 lat_dec<-as.numeric(conv_unit('9 56 5.0604', 
@@ -169,40 +264,185 @@ long_dec<-char2dms(long, chd="d", chm="m", chs="s") |> as.numeric()
 print(c(lat_dec, long_dec))
 ```
 
-# 4. Assign region, country, location
+# 5. Assign region, country, location
 
-```{r}
-GNcountryCode(lat = lat_dec, lng = long_dec, lang = "en")
+```{r, eval=FALSE}
+# using geonames
+# this package needs the user to  enable web services from geonames account
+options(geonamesUsername = "username")
+country<-GNcountryCode(lat = lat_dec, lng = long_dec, lang = "en")
+country$countryName
 ```
 
-# 5. Save clean database
+Geonames library requires an username. I do have one but I chose not to added to the script.
 
 ```{r}
-save(db, file = "cleanDB.rds")
+# using tidygeocoder
+country<-reverse_geo(lat = lat_dec, long = long_dec, full_results = T)
+country |> select(country, country_code, city)
 ```
 
-# 6. Identificar información faltante, valores fuera de rango o con diferente escala
+The tidygeocoder library also offers some more precise information, like city. In this example I used a small example but those functions can be used through the entire column.
+
+# 6. Identify lacking information and values with incorrect formatting
+
+## Lacking information
 
 ```{r}
-
+skim(raw_long)
 ```
 
-# 7. Identificar inconsistencas y registrar filas en base de bentos que no tengan coincidencias.
+Skim function provides info on the dataset. For instance, we know that year, month and date are considered characters and it is something to fix. We also know that all observations from latitude and longitude are NA, so R treats those variables as logical. Besides, skim also shows the exact amount of NAs for each column.
+
+"Value" column has 1224 NAs, let's identify them.
 
 ```{r}
-
+NAs<-which(is.na(raw_long$value))
+NAs_df<-raw_long[NAs,-c(2,3, 8, 9)] 
+NAs_df |> head(10)
 ```
 
-# 8. Identificar errores, profundidades mayores a 35 m, temperatura fuera del
-rango 17-35, cuadrantes o transectos mayores a 10, años antes de 2000, especies terrestres o que no son de la región
+The first observations show NA values related to the ensp functional group. This corresponds to encrusting sponges which are not a variable in the first dataset, hence the NAs.
+
+If we check other observations, well notice that NAs from the raw2 section of the data set correspond to either Gardineroseris, boulders, ENCO or OTHR. These are also not in the raw2 database, hence the NAs.
 
 ```{r}
+NAs_df[351:361,]
+```
 
+These data can be kept as NAs or assign a value of zero (0) because if there is no data, it means they are not present at those sites.
+
+## density values (not percentages)
+
+Some values from the dataset are given as densities instead of percentages. This hould be fixed.
+
+```{r}
+# Identify density values
+densities<-which(raw_long$value<1 & raw_long$value>0)
+raw_long[densities,-c(2,3, 8, 9)]
+
+# transform to percentage
+raw_long$value[densities]<-raw_long$value[densities]*100
+```
+
+Now we can see that there are not more density values.
+
+```{r}
+which(raw_long$value<1 & raw_long$value>0)
+```
+
+It is important to note that these values should be reviewed before doing the actual changes.
+
+Finally, we will check if any value exceeds 100 (since they are percentages).
+
+```{r}
+which(raw_long$value>100)
+```
+
+# 7. Identify inconsistecies and register rows with no coincidences.
+
+```{r}
+str(raw_long)
+```
+
+Just by looking at the structure we already know there are some problems. For instance, site should be a factor, not a character. And we had noted before that day and month (and probably year) are treated as characters but they should be numbers.
+
+*Here I say "probably" for year because is this example data set they are computed as "year1" and so on. Something similar occurs with depth, which should be numeric but here is computed as "deep" or "shallow".
+
+Functional group should also be a factor. But before fixing those variables, I will check if the levels of those factors are fine or should be corrected.
+
+```{r}
+# First I will check if the values make sense. That is, months are between 1-12 and numbers 1-31
+levels(as.factor(raw_long$month))
+levels(as.factor(raw_long$day))
+
+levels(as.factor(raw_long$site))
+levels(as.factor(raw_long$functional_group))
+levels(as.factor(raw_long$functional_group_correct))
+```
+
+Everything seems ok except "site". Raw1 database uses site names in Spanish (sitio) while raw2 uses English (site). I will convert those variables and then correct the levels of site.
+
+```{r}
+raw_long<-raw_long |> 
+  mutate(day=as.numeric(day),
+         month=as.numeric(month), 
+         site=as.factor(site),
+         taxa=as.factor(functional_group),
+         functional_group=
+           as.factor(functional_group_correct))
+
+levels(raw_long$site)[7:8]<-c("Site1", "Site2")
+levels(raw_long$site)
+```
+
+*Note: I changed "functional group" to "taxa" and left "functional group" as the correct assignment. Besides, "taxa" now refers to the values previously in the "functional group" column.
+
+# 8. Identify errors: depths greater than 35 m, temperatures outside the range of 17-35, quadrants or transects greater than 10, years before 2000, terrestrial species, or species not native to the region.
+
+Identify those errors can be done the same way as before (see values as density).
+
+```{r}
+# depth
+depth_errors<-which(raw_long$depth>35 | raw_long$depth<0)
+
+# temperature
+temp_errors<-which(raw_long$temp>33 | raw_long$temp<17)
+
+# years before 2000
+years_errors<-which(raw_long$year<2000)
+
+# transect
+transect_errors<-which(raw_long$transect>10)
+```
+
+In this particular case:
+- Depth does not work properly due to depth being treated as character. When using numbers should work properly.
+- Temperature shows a warning because there is no such variable in the data set.
+
+# 9. Add variables from the intermediate database that are not is the raw databases
+
+```{r}
+# identify columns
+new_columns<-names(inter)[c(1:3, 7, 11, 13, 16:20)]
+
+# add those columns to the data frame
+for (col in new_columns) {
+  raw_long[[col]] <- NA  # You can also assign a default value instead of NA
+}
+
+# check new columns
+names(raw_long)<-tolower(names(raw_long))
+names(raw_long)
+```
+
+Finally, I will reorder again the database to match the intermediate example
+
+```{r}
+orden<-tolower(names(inter))
+raw_long<- raw_long |> select(c(all_of(orden), taxa)) # added taxa
+
+raw_long|> head(6)
+inter |> head(6)
+```
+
+# 10. Save clean database
+
+```{r}
+save(raw1_long, file = "cleanDB.rds")
 ```
 
 
+# 11. Final considerations
 
+Both raw databases lack many information. For instance, there is no data for temperature, sampling method or coordinates, as well as other variables. This information is required and shall be requested to the corresponding researcher.Some may be obtained from other sources like country from coordinates as shown before.
 
+Some inconsistencies found throughout both data sets include naming of variables or observations. For instance, using Spanish in one data set and English in the other one for "site". Also, raw1 data set uses "% " as part of the variables names so they needed to be corrected. Additionally, some variables found in one data set were not considered in the other one.
 
+Some values were not correct but fixed: many values between 0 and 1 were transformed to percentages. 
+
+As recommendation: consider to add metadata to the databases. For example, people may not knot what "falg" is. Even in the context of benthic data may be filamentous algae or fleshy algae. This not only add clarity to the analysis but means it is easier to understand what is happening. Is particularly useful in this case, due to the necessity to assign a correct functional group but the functional group database do not mention "falg" (it mentions fleshy algae). Functional groups database should also be reviewed. For example "turfing algae" is assigned to macroalgae functional group but "tapete" to turf, but both are the same. This happens as well with cyanobacteria, which is assigned first to its own group but later is assigned to "others".
+
+This is just an example of how to proceed, there will be ways to improve the code.
 
 
